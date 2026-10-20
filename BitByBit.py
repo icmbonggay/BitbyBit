@@ -20,7 +20,7 @@ MAX_NAME_LENGTH = 28
 
 THEMES = {
     "dark": {
-        "bg": "#0E1016", "card": "#171A23", "card_hover": "#1D212C",
+        "bg": "#0E1116", "card": "#171A23", "card_hover": "#1D212C",
         "border": "#252A38", "text": "#F3F5FA", "muted": "#8990A6",
         "track": "#2A3040", "accent": "#7C5CFF", "success": "#34D399",
         "danger": "#F87171", "on_accent": "#FFFFFF",

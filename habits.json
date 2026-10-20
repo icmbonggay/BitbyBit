@@ -1,4 +1,15 @@
 {
-  "theme": "light",
-  "habits": []
+  "theme": "dark",
+  "habits": [
+    {
+      "name": "Coding",
+      "streak": 1,
+      "best_streak": 1,
+      "last_logged_date": "2026-10-20",
+      "history": [
+        "2026-10-20"
+      ],
+      "color": 0
+    }
+  ]
 }
