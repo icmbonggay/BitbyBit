@@ -9,7 +9,8 @@
       "history": [
         "2026-10-20"
       ],
-      "color": 0
+      "color": 0,
+      "icon": "builtin:star"
     }
   ]
 }

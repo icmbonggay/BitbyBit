@@ -5,14 +5,25 @@ Your habits are saved next to this file in habits.json.
 """
 
 import json
+import math
+import re
+import shutil
 import tkinter as tk
 from datetime import date, timedelta
 from pathlib import Path
+from tkinter import filedialog
 from tkinter import font as tkfont
 from tkinter import messagebox
 
+try:  # Pillow is optional. Without it, only PNG and GIF pictures can be used.
+    from PIL import Image, ImageTk
+except ImportError:
+    Image = ImageTk = None
+
 DATA_FILE = Path(__file__).with_name("habits.json")
+ICON_DIR = Path(__file__).with_name("icons")  # uploaded pictures are kept here
 MAX_NAME_LENGTH = 28
+ICON_PIXELS = 28  # size of an uploaded picture inside its chip
 
 # ---------------------------------------------------------------------------
 # Look and feel
@@ -87,14 +98,170 @@ def fit_text(text, font, max_pixels):
     return text + "..."
 
 
+def mix(color_a, color_b, amount):
+    """Blend two #RRGGBB colours. amount=0 gives color_a, 1 gives color_b."""
+    a = [int(color_a[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(color_b[i:i + 2], 16) for i in (1, 3, 5)]
+    blended = [round(x * (1 - amount) + y * amount) for x, y in zip(a, b)]
+    return "#%02x%02x%02x" % tuple(blended)
+
+
+# ---------------------------------------------------------------------------
+# Icons
+#
+# A habit's icon is stored as text:
+#   None            -> the first letter of the habit name (the default)
+#   "builtin:star"  -> one of the drawn icons in BUILTIN_ICONS below
+#   "file:run.png"  -> a picture you uploaded, kept in the icons folder
+# ---------------------------------------------------------------------------
+
+BUILTIN_ICONS = ["star", "heart", "book", "dumbbell", "drop", "moon", "sun",
+                 "bolt", "leaf", "code", "coffee", "music", "target", "clock"]
+
+
+def draw_builtin_icon(canvas, key, cx, cy, size, color, bg, tags=()):
+    """Draw one of the built in icons. Shapes are described on a -1..1 grid."""
+    stroke = max(2, size / 6)
+
+    def pts(coords):
+        return [value for x, y in coords
+                for value in (cx + x * size, cy + y * size)]
+
+    def line(*coords, fill=color, width=stroke):
+        canvas.create_line(pts(coords), fill=fill, width=width,
+                           capstyle="round", joinstyle="round", tags=tags)
+
+    def poly(coords, smooth=False):
+        canvas.create_polygon(pts(coords), fill=color, outline=color,
+                              smooth=smooth, tags=tags)
+
+    def oval(x1, y1, x2, y2, fill=color, outline="", width=stroke):
+        canvas.create_oval(cx + x1 * size, cy + y1 * size,
+                           cx + x2 * size, cy + y2 * size,
+                           fill=fill, outline=outline, width=width, tags=tags)
+
+    if key == "star":
+        poly([(math.cos(-math.pi / 2 + i * math.pi / 5) * (1 if i % 2 == 0 else 0.45),
+               math.sin(-math.pi / 2 + i * math.pi / 5) * (1 if i % 2 == 0 else 0.45))
+              for i in range(10)])
+    elif key == "heart":
+        points = []
+        for i in range(48):
+            a = i * 2 * math.pi / 48
+            points.append((math.sin(a) ** 3,
+                           -(13 * math.cos(a) - 5 * math.cos(2 * a)
+                             - 2 * math.cos(3 * a) - math.cos(4 * a)) / 16 + 0.08))
+        poly(points)
+    elif key == "book":
+        poly([(-0.95, -0.6), (-0.07, -0.42), (-0.07, 0.8), (-0.95, 0.62)])
+        poly([(0.95, -0.6), (0.07, -0.42), (0.07, 0.8), (0.95, 0.62)])
+    elif key == "dumbbell":
+        line((-0.55, 0), (0.55, 0))
+        poly([(-0.8, -0.55), (-0.55, -0.55), (-0.55, 0.55), (-0.8, 0.55)])
+        poly([(0.8, -0.55), (0.55, -0.55), (0.55, 0.55), (0.8, 0.55)])
+        poly([(-1, -0.3), (-0.8, -0.3), (-0.8, 0.3), (-1, 0.3)])
+        poly([(1, -0.3), (0.8, -0.3), (0.8, 0.3), (1, 0.3)])
+    elif key == "drop":
+        poly([(0, -1), (0.5, -0.05), (0.66, 0.4), (0, 1), (-0.66, 0.4),
+              (-0.5, -0.05)], smooth=True)
+    elif key == "moon":
+        oval(-0.9, -0.9, 0.9, 0.9)
+        oval(-0.3, -1.05, 1.2, 0.45, fill=bg)
+    elif key == "sun":
+        oval(-0.4, -0.4, 0.4, 0.4)
+        for i in range(8):
+            a = i * math.pi / 4
+            line((math.cos(a) * 0.68, math.sin(a) * 0.68),
+                 (math.cos(a) * 0.98, math.sin(a) * 0.98))
+    elif key == "bolt":
+        poly([(0.2, -1), (-0.6, 0.15), (-0.05, 0.15), (-0.25, 1),
+              (0.6, -0.2), (0.05, -0.2)])
+    elif key == "leaf":
+        poly([(-0.8, 0.8), (-0.78, 0.0), (-0.2, -0.62), (0.88, -0.88),
+              (0.72, 0.05), (0.1, 0.7)], smooth=True)
+        line((-0.8, 0.8), (0.35, -0.4), fill=bg, width=max(1.5, size / 9))
+    elif key == "code":
+        line((-0.4, -0.6), (-0.95, 0), (-0.4, 0.6))
+        line((0.4, -0.6), (0.95, 0), (0.4, 0.6))
+        line((0.14, -0.8), (-0.14, 0.8))
+    elif key == "coffee":
+        poly([(-0.8, -0.15), (0.4, -0.15), (0.4, 0.4), (0.1, 0.85),
+              (-0.5, 0.85), (-0.8, 0.4)])
+        oval(0.2, 0.0, 0.95, 0.55, fill="", outline=color)
+        line((-0.45, -0.9), (-0.45, -0.5))
+        line((0.0, -0.9), (0.0, -0.5))
+    elif key == "music":
+        oval(-0.8, 0.2, -0.15, 0.85)
+        line((-0.2, 0.55), (-0.2, -0.85))
+        poly([(-0.2, -0.85), (0.85, -0.55), (0.85, -0.15), (-0.2, -0.45)])
+    elif key == "target":
+        oval(-0.95, -0.95, 0.95, 0.95, fill="", outline=color)
+        oval(-0.5, -0.5, 0.5, 0.5, fill="", outline=color)
+        oval(-0.12, -0.12, 0.12, 0.12)
+    elif key == "clock":
+        oval(-0.92, -0.92, 0.92, 0.92, fill="", outline=color)
+        line((0, 0), (0, -0.55))
+        line((0, 0), (0.4, 0.22))
+
+
+def draw_icon_chip(canvas, app, icon, name, cx, cy, size, accent, tags=()):
+    """Draw a habit's icon on a soft coloured rounded square."""
+    t = app.t
+    half = size / 2
+    rounded_rect(canvas, cx - half, cy - half, cx + half, cy + half, 14,
+                 fill=mix(accent, t["card"], 0.82), outline="", tags=tags)
+    kind, _, value = (icon or "").partition(":")
+    if kind == "file":
+        image = app.get_icon_image(value)
+        if image is not None:
+            canvas.create_image(cx, cy, image=image, tags=tags)
+            return
+    elif kind == "builtin" and value in BUILTIN_ICONS:
+        draw_builtin_icon(canvas, value, cx, cy, size * 0.27, accent,
+                          mix(accent, t["card"], 0.82), tags)
+        return
+    letter = (name.strip()[:1] or "?").upper()
+    canvas.create_text(cx, cy, text=letter, fill=accent, tags=tags,
+                       font=app.fonts["heading"])
+
+
+def import_icon_image(source):
+    """Copy a picture into the icons folder and return the stored file name."""
+    source = Path(source)
+    extension = source.suffix.lower()
+    if Image is None and extension not in (".png", ".gif"):
+        raise ValueError("Only PNG and GIF pictures work right now "
+                         "(install Pillow for more types).")
+    ICON_DIR.mkdir(exist_ok=True)
+    stem = re.sub(r"[^a-z0-9]+", "-", source.stem.lower()).strip("-") or "icon"
+    final_extension = ".png" if Image is not None else extension
+
+    target, number = ICON_DIR / f"{stem}{final_extension}", 2
+    while target.exists():
+        target = ICON_DIR / f"{stem}-{number}{final_extension}"
+        number += 1
+
+    if Image is not None:
+        try:
+            picture = Image.open(source).convert("RGBA")
+        except Exception:
+            raise ValueError("That file could not be read as a picture.")
+        picture.thumbnail((96, 96))  # keeps the icons folder small
+        picture.save(target)
+    else:
+        shutil.copyfile(source, target)
+    return target.name
+
+
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
 
 class Habit:
     def __init__(self, name, last_logged_date=None, streak=0,
-                 history=None, color=0, best_streak=None):
+                 history=None, color=0, best_streak=None, icon=None):
         self.name = name
+        self.icon = icon  # see the Icons section above
         self.last_logged_date = last_logged_date
         self.streak = streak
         self.best_streak = max(streak, best_streak or 0)
@@ -172,6 +339,7 @@ class Habit:
                                  if self.last_logged_date else None),
             "history": sorted(day.isoformat() for day in self.history),
             "color": self.color,
+            "icon": self.icon,
         }
 
     @classmethod
@@ -184,6 +352,7 @@ class Habit:
             [date.fromisoformat(day) for day in data.get("history", [])],
             data.get("color", 0),
             data.get("best_streak"),
+            data.get("icon"),
         )
 
 
@@ -192,7 +361,7 @@ class HabitTracker:
         self.habits = []
         self.theme = "dark"
 
-    def add_habit(self, name, date=None, streak=0):
+    def add_habit(self, name, date=None, streak=0, icon=None):
         name = name.strip()
         if not name:
             return "Please type a habit name first."
@@ -202,7 +371,7 @@ class HabitTracker:
             if habit.name.lower() == name.lower():
                 return f"Habit '{name}' already exists."
         color = len(self.habits) % len(HABIT_COLORS)
-        self.habits.append(Habit(name, date, streak, color=color))
+        self.habits.append(Habit(name, date, streak, color=color, icon=icon))
         return f"Habit '{name}' added successfully."
 
     def remove_habit(self, name):
@@ -346,6 +515,7 @@ class AddBar(tk.Canvas):
                          highlightthickness=0, bd=0)
         self.app = app
         t = app.t
+        self.icon = None  # icon chosen for the habit that is about to be added
         self.showing_placeholder = True
         self.entry = tk.Entry(self, relief="flat", bd=0, highlightthickness=0,
                               bg=t["card"], fg=t["muted"],
@@ -354,12 +524,28 @@ class AddBar(tk.Canvas):
         self.entry.bind("<FocusIn>", self.on_focus_in)
         self.entry.bind("<FocusOut>", self.on_focus_out)
         self.entry.bind("<Return>", lambda e: self.submit())
-        self.entry_window = self.create_window(22, 29, window=self.entry,
+        self.entry_window = self.create_window(66, 29, window=self.entry,
                                                anchor="w")
         self.bind("<Configure>", lambda e: self.draw())
-        self.tag_bind("add", "<Button-1>", lambda e: self.submit())
-        self.tag_bind("add", "<Enter>", lambda e: self.config(cursor="hand2"))
-        self.tag_bind("add", "<Leave>", lambda e: self.config(cursor=""))
+        for tag, action in (("add", lambda e: self.submit()),
+                            ("icon", lambda e: self.pick_icon())):
+            self.tag_bind(tag, "<Button-1>", action)
+            self.tag_bind(tag, "<Enter>", lambda e: self.config(cursor="hand2"))
+            self.tag_bind(tag, "<Leave>", lambda e: self.config(cursor=""))
+
+    def next_color(self):
+        return HABIT_COLORS[len(self.app.tracker.habits) % len(HABIT_COLORS)]
+
+    def typed_name(self):
+        return "" if self.showing_placeholder else self.entry.get()
+
+    def pick_icon(self):
+        def chosen(icon):
+            self.icon = icon
+            self.draw()
+            self.entry.focus_set()
+        IconPicker(self.app, self.icon, self.typed_name() or "New habit",
+                   self.next_color(), chosen)
 
     def on_focus_in(self, _event):
         if self.showing_placeholder:
@@ -375,10 +561,11 @@ class AddBar(tk.Canvas):
             self.showing_placeholder = True
 
     def submit(self):
-        text = "" if self.showing_placeholder else self.entry.get()
-        added = self.app.add_habit(text)
+        added = self.app.add_habit(self.typed_name(), self.icon)
         if added:
             self.entry.delete(0, "end")
+            self.icon = None  # the next habit starts with the default icon
+            self.draw()
         self.entry.focus_set()
 
     def draw(self):
@@ -387,16 +574,25 @@ class AddBar(tk.Canvas):
         self.delete("shape")
         rounded_rect(self, 1, 1, w - 1, h - 1, 20, fill=t["card"],
                      outline=t["border"], tags="shape")
+        # icon button: shows the chosen icon, or a faded star as a hint
+        if self.icon:
+            draw_icon_chip(self, self.app, self.icon, self.typed_name(), 36,
+                           h / 2, 40, self.next_color(), ("shape", "icon"))
+        else:
+            rounded_rect(self, 16, h / 2 - 20, 56, h / 2 + 20, 14,
+                         fill=t["track"], outline="", tags=("shape", "icon"))
+            draw_builtin_icon(self, "star", 36, h / 2, 10, t["muted"],
+                              t["track"], ("shape", "icon"))
         rounded_rect(self, w - 98, 9, w - 9, h - 9, 14, fill=t["accent"],
                      outline="", tags=("shape", "add"))
         self.create_text(w - 53, h / 2, text="+  Add", font=self.app.fonts["button"],
                          fill=t["on_accent"], tags=("shape", "add"))
-        self.itemconfigure(self.entry_window, width=max(50, w - 140))
+        self.itemconfigure(self.entry_window, width=max(50, w - 184))
         self.tag_lower("shape")
 
 
 class HabitCard(tk.Canvas):
-    """One habit: check circle, name, last 7 days and the streak."""
+    """One habit: check circle, icon, name, last 7 days and the streak."""
 
     HEIGHT = 96
 
@@ -410,6 +606,7 @@ class HabitCard(tk.Canvas):
         self.bind("<Enter>", lambda e: self.set_hover(True))
         self.bind("<Leave>", lambda e: self.set_hover(False))
         for tag, action in (("check", lambda e: app.toggle_habit(habit)),
+                            ("icon", lambda e: app.choose_icon_for(habit)),
                             ("delete", lambda e: app.delete_habit(habit))):
             self.tag_bind(tag, "<Button-1>", action)
             self.tag_bind(tag, "<Enter>", lambda e: self.config(cursor="hand2"))
@@ -442,24 +639,28 @@ class HabitCard(tk.Canvas):
             self.create_oval(cx - 17, cy - 17, cx + 17, cy + 17, fill=t["card"],
                              outline=accent, width=2, tags="check")
 
+        # icon (click it to change it)
+        draw_icon_chip(self, app, habit.icon, habit.name, 98, cy, 44, accent,
+                       "icon")
+
         # name
         streak = habit.current_streak()
-        name_space = w - 72 - 112
-        self.create_text(72, 32, text=fit_text(habit.name, f["heading"], name_space),
+        name_space = w - 134 - 112
+        self.create_text(134, 32, text=fit_text(habit.name, f["heading"], name_space),
                          anchor="w", font=f["heading"], fill=t["text"])
 
         # last 7 days
         today = date.today()
         for i in range(7):
             day = today - timedelta(days=6 - i)
-            x, y = 78 + i * 20, 63
+            x, y = 140 + i * 18, 63
             filled = day in habit.history
-            self.create_oval(x - 6, y - 6, x + 6, y + 6,
+            self.create_oval(x - 5, y - 5, x + 5, y + 5,
                              fill=accent if filled else t["track"], outline="")
             if day == today:
-                self.create_oval(x - 9, y - 9, x + 9, y + 9, outline=accent,
+                self.create_oval(x - 8, y - 8, x + 8, y + 8, outline=accent,
                                  width=1)
-        self.create_text(78 + 7 * 20 + 2, 63, text=f"best {habit.best_streak}",
+        self.create_text(140 + 7 * 18 + 4, 63, text=f"best {habit.best_streak}",
                          anchor="w", font=f["tiny"], fill=t["muted"])
 
         # streak
@@ -479,6 +680,134 @@ class HabitCard(tk.Canvas):
                              width=2, capstyle="round", tags="delete")
             self.create_line(dx - 4, dy + 4, dx + 4, dy - 4, fill=t["danger"],
                              width=2, capstyle="round", tags="delete")
+
+
+class IconPicker(tk.Toplevel):
+    """A small window with every icon to choose from, plus an upload tile."""
+
+    COLUMNS = 4
+    CELL = 76
+    GAP = 12
+
+    def __init__(self, app, current, name, accent, on_pick):
+        super().__init__(app.root)
+        self.app, self.current, self.name = app, current, name
+        self.accent, self.on_pick = accent, on_pick
+        t = app.t
+
+        self.title("Choose an icon")
+        self.configure(bg=t["bg"])
+        self.resizable(False, False)
+        self.transient(app.root)
+        self.bind("<Escape>", lambda e: self.destroy())
+
+        # the options: default letter, drawn icons, the current picture (if
+        # any), and finally the upload tile
+        self.options = [None] + [f"builtin:{key}" for key in BUILTIN_ICONS]
+        if current and current.startswith("file:"):
+            self.options.append(current)
+        self.options.append("upload")
+
+        rows = math.ceil(len(self.options) / self.COLUMNS)
+        width = self.COLUMNS * self.CELL + (self.COLUMNS + 1) * self.GAP
+        height = rows * self.CELL + (rows + 1) * self.GAP
+
+        tk.Label(self, text="Choose an icon", bg=t["bg"], fg=t["text"],
+                 font=app.fonts["heading"]).pack(anchor="w", padx=20,
+                                                 pady=(18, 0))
+        tk.Label(self, text="Pick one, or upload your own picture.",
+                 bg=t["bg"], fg=t["muted"], font=app.fonts["body"]
+                 ).pack(anchor="w", padx=20, pady=(2, 4))
+        self.grid_canvas = tk.Canvas(self, width=width, height=height,
+                                     bg=t["bg"], highlightthickness=0, bd=0)
+        self.grid_canvas.pack(padx=8)
+        self.status = tk.Label(self, text="", bg=t["bg"], fg=t["danger"],
+                               font=app.fonts["body"], wraplength=width - 20)
+        self.status.pack(pady=(0, 12))
+
+        self.grid_canvas.bind("<Button-1>", self.on_click)
+        self.grid_canvas.bind("<Motion>", self.on_motion)
+        self.hovered = None
+        self.draw()
+        self.place_next_to(app.root)
+        self.grab_set()
+
+    def place_next_to(self, root):
+        self.update_idletasks()
+        x = root.winfo_rootx() + (root.winfo_width() - self.winfo_width()) // 2
+        y = root.winfo_rooty() + 90
+        self.geometry(f"+{max(0, x)}+{max(0, y)}")
+
+    def cell_box(self, index):
+        row, column = divmod(index, self.COLUMNS)
+        x = self.GAP + column * (self.CELL + self.GAP)
+        y = self.GAP + row * (self.CELL + self.GAP)
+        return x, y, x + self.CELL, y + self.CELL
+
+    def index_at(self, x, y):
+        for index in range(len(self.options)):
+            x1, y1, x2, y2 = self.cell_box(index)
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                return index
+        return None
+
+    def draw(self):
+        t, f, canvas = self.app.t, self.app.fonts, self.grid_canvas
+        canvas.delete("all")
+        for index, option in enumerate(self.options):
+            x1, y1, x2, y2 = self.cell_box(index)
+            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+            selected = option == self.current and option != "upload"
+            rounded_rect(canvas, x1, y1, x2, y2, 18,
+                         fill=t["card_hover"] if index == self.hovered else t["card"],
+                         outline=self.accent if selected else t["border"],
+                         width=2 if selected else 1)
+            if option == "upload":
+                canvas.create_line(cx - 9, cy - 6, cx + 9, cy - 6, fill=t["muted"],
+                                   width=3, capstyle="round")
+                canvas.create_line(cx, cy - 15, cx, cy + 3, fill=t["muted"],
+                                   width=3, capstyle="round")
+                canvas.create_text(cx, y2 - 14, text="Upload", font=f["tiny"],
+                                   fill=t["muted"])
+            else:
+                draw_icon_chip(canvas, self.app, option, self.name, cx, cy, 48,
+                               self.accent)
+
+    def on_motion(self, event):
+        index = self.index_at(event.x, event.y)
+        if index != self.hovered:
+            self.hovered = index
+            self.grid_canvas.config(cursor="hand2" if index is not None else "")
+            self.draw()
+
+    def on_click(self, event):
+        index = self.index_at(event.x, event.y)
+        if index is None:
+            return
+        option = self.options[index]
+        if option == "upload":
+            self.upload()
+        else:
+            self.choose(option)
+
+    def choose(self, option):
+        self.grab_release()
+        self.destroy()
+        self.on_pick(option)
+
+    def upload(self):
+        types = "*.png *.gif"
+        if Image is not None:
+            types += " *.jpg *.jpeg *.bmp *.webp"
+        path = filedialog.askopenfilename(
+            parent=self, title="Choose a picture",
+            filetypes=[("Pictures", types), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            self.choose(self.app.import_icon(path))
+        except ValueError as problem:
+            self.status.config(text=str(problem))
 
 
 class EmptyState(tk.Canvas):
@@ -579,6 +908,7 @@ class BitByBitApp:
             "label": tkfont.Font(family=family, size=10, weight="bold"),
         }
 
+        self.icon_images = {}  # cache of uploaded pictures (tk needs us to keep them)
         self.toast_job = None
         self.shown_day = date.today()
         self.build()
@@ -635,8 +965,48 @@ class BitByBitApp:
 
     # -- actions ------------------------------------------------------------
 
-    def add_habit(self, name):
-        message = self.tracker.add_habit(name)
+    def get_icon_image(self, filename):
+        """Load an uploaded picture from the icons folder (None if unreadable)."""
+        if filename not in self.icon_images:
+            image = None
+            try:
+                path = str(ICON_DIR / filename)
+                if Image is not None:
+                    picture = Image.open(path).convert("RGBA")
+                    picture.thumbnail((ICON_PIXELS, ICON_PIXELS))
+                    image = ImageTk.PhotoImage(picture)
+                else:
+                    image = tk.PhotoImage(file=path)
+                    biggest = max(image.width(), image.height())
+                    if biggest > ICON_PIXELS:
+                        image = image.subsample(math.ceil(biggest / ICON_PIXELS))
+                    elif biggest * 2 <= ICON_PIXELS:
+                        image = image.zoom(ICON_PIXELS // biggest)
+            except Exception:
+                image = None
+            self.icon_images[filename] = image
+        return self.icon_images[filename]
+
+    def import_icon(self, path):
+        """Store an uploaded picture. Returns the icon text, or raises ValueError."""
+        filename = import_icon_image(path)
+        if self.get_icon_image(filename) is None:
+            (ICON_DIR / filename).unlink(missing_ok=True)
+            raise ValueError("That file could not be read as a picture.")
+        return f"file:{filename}"
+
+    def choose_icon_for(self, habit):
+        accent = HABIT_COLORS[habit.color % len(HABIT_COLORS)]
+
+        def chosen(icon):
+            habit.icon = icon
+            self.tracker.save()
+            self.cards[habit.name].draw()
+            self.show_message(f"Updated the icon for '{habit.name}'.")
+        IconPicker(self, habit.icon, habit.name, accent, chosen)
+
+    def add_habit(self, name, icon=None):
+        message = self.tracker.add_habit(name, icon=icon)
         added = message.endswith("added successfully.")
         if added:
             self.tracker.save()
