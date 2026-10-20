@@ -8,6 +8,7 @@ import json
 import math
 import re
 import shutil
+import sys
 import tkinter as tk
 from datetime import date, timedelta
 from pathlib import Path
@@ -29,40 +30,53 @@ ICON_PIXELS = 28  # size of an uploaded picture inside its chip
 # Look and feel
 # ---------------------------------------------------------------------------
 
+# Colours follow Apple's system palette (iOS and macOS "grouped" look).
 THEMES = {
     "dark": {
-        "bg": "#0E1116", "card": "#171A23", "card_hover": "#1D212C",
-        "border": "#252A38", "text": "#F3F5FA", "muted": "#8990A6",
-        "track": "#2A3040", "accent": "#7C5CFF", "success": "#34D399",
-        "danger": "#F87171", "on_accent": "#FFFFFF",
+        "bg": "#000000", "card": "#1C1C1E", "card_hover": "#2C2C2E",
+        "border": "#38383A", "text": "#FFFFFF", "muted": "#8E8E93",
+        "track": "#3A3A3C", "accent": "#0A84FF", "success": "#30D158",
+        "danger": "#FF453A", "on_accent": "#FFFFFF",
     },
     "light": {
-        "bg": "#F4F5FA", "card": "#FFFFFF", "card_hover": "#FAFAFE",
-        "border": "#E3E6F0", "text": "#151821", "muted": "#6C7389",
-        "track": "#E5E8F2", "accent": "#6C47FF", "success": "#10B981",
-        "danger": "#EF4444", "on_accent": "#FFFFFF",
+        "bg": "#F2F2F7", "card": "#FFFFFF", "card_hover": "#F5F5FA",
+        "border": "#E5E5EA", "text": "#000000", "muted": "#8E8E93",
+        "track": "#E5E5EA", "accent": "#007AFF", "success": "#34C759",
+        "danger": "#FF3B30", "on_accent": "#FFFFFF",
     },
 }
 
-# Every habit gets its own accent colour.
-HABIT_COLORS = ["#7C5CFF", "#FF7A59", "#2EC4A6", "#FFB020", "#EF5DA8", "#3FA7FF"]
+# Every habit gets its own colour (a bit brighter in dark mode, like iOS).
+HABIT_COLORS = {
+    "light": ["#007AFF", "#FF9500", "#34C759", "#FF2D55",
+              "#AF52DE", "#32ADE6", "#FF3B30", "#5856D6"],
+    "dark": ["#0A84FF", "#FF9F0A", "#30D158", "#FF375F",
+             "#BF5AF2", "#64D2FF", "#FF453A", "#5E5CE6"],
+}
+COLOR_COUNT = 8
 
-FLAME_OUTER = "#FF7A3D"
-FLAME_INNER = "#FFC857"
+FLAME_OUTER = "#FF9500"
+FLAME_INNER = "#FFCC00"
 
-FONT_CHOICES = ["SF Pro Display", "Helvetica Neue", "Segoe UI", "Inter",
+FONT_CHOICES = [".AppleSystemUIFont", "SF Pro Text", "Helvetica Neue", "Segoe UI", "Inter",
                 "Helvetica", "DejaVu Sans", "Arial"]
 
 
 def rounded_rect(canvas, x1, y1, x2, y2, r, **options):
-    """Draw a rounded rectangle on a canvas (tkinter has no built in one)."""
+    """Draw a rounded rectangle on a canvas (tkinter has no built in one).
+
+    The corners are real quarter circles, so r is the true corner radius.
+    """
     r = max(0, min(r, (x2 - x1) / 2, (y2 - y1) / 2))
-    points = [
-        x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
-        x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
-        x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
-    ]
-    return canvas.create_polygon(points, smooth=True, **options)
+    points = []
+    # each corner: (centre x, centre y, start angle in degrees)
+    for corner_x, corner_y, start in ((x2 - r, y1 + r, -90), (x2 - r, y2 - r, 0),
+                                      (x1 + r, y2 - r, 90), (x1 + r, y1 + r, 180)):
+        for step in range(11):
+            angle = math.radians(start + step * 9)
+            points += [corner_x + r * math.cos(angle),
+                       corner_y + r * math.sin(angle)]
+    return canvas.create_polygon(points, **options)
 
 
 def draw_flame(canvas, cx, cy, size, lit=True, theme=None, tags=()):
@@ -205,24 +219,25 @@ def draw_builtin_icon(canvas, key, cx, cy, size, color, bg, tags=()):
 
 
 def draw_icon_chip(canvas, app, icon, name, cx, cy, size, accent, tags=()):
-    """Draw a habit's icon on a soft coloured rounded square."""
-    t = app.t
+    """Draw a habit's icon like an app icon: a coloured square with a white glyph."""
     half = size / 2
-    rounded_rect(canvas, cx - half, cy - half, cx + half, cy + half, 14,
-                 fill=mix(accent, t["card"], 0.82), outline="", tags=tags)
+    radius = size * 0.30
     kind, _, value = (icon or "").partition(":")
-    if kind == "file":
-        image = app.get_icon_image(value)
-        if image is not None:
-            canvas.create_image(cx, cy, image=image, tags=tags)
-            return
+    image = app.get_icon_image(value) if kind == "file" else None
+
+    # pictures sit on a soft tint so see-through PNGs still look right
+    fill = mix(accent, "#FFFFFF", 0.82) if image is not None else accent
+    rounded_rect(canvas, cx - half, cy - half, cx + half, cy + half, radius,
+                 fill=fill, outline="", tags=tags)
+    if image is not None:
+        canvas.create_image(cx, cy, image=image, tags=tags)
     elif kind == "builtin" and value in BUILTIN_ICONS:
-        draw_builtin_icon(canvas, value, cx, cy, size * 0.27, accent,
-                          mix(accent, t["card"], 0.82), tags)
-        return
-    letter = (name.strip()[:1] or "?").upper()
-    canvas.create_text(cx, cy, text=letter, fill=accent, tags=tags,
-                       font=app.fonts["heading"])
+        draw_builtin_icon(canvas, value, cx, cy, size * 0.27, "#FFFFFF",
+                          accent, tags)
+    else:
+        letter = (name.strip()[:1] or "?").upper()
+        canvas.create_text(cx, cy, text=letter, fill="#FFFFFF", tags=tags,
+                           font=app.fonts["chip"])
 
 
 def import_icon_image(source):
@@ -370,7 +385,7 @@ class HabitTracker:
         for habit in self.habits:
             if habit.name.lower() == name.lower():
                 return f"Habit '{name}' already exists."
-        color = len(self.habits) % len(HABIT_COLORS)
+        color = len(self.habits) % COLOR_COUNT
         self.habits.append(Habit(name, date, streak, color=color, icon=icon))
         return f"Habit '{name}' added successfully."
 
@@ -414,10 +429,10 @@ class HabitTracker:
 # ---------------------------------------------------------------------------
 
 class Header(tk.Canvas):
-    """Logo, title, today's date and the light/dark switch."""
+    """Small date, a large title, and the light/dark switch."""
 
     def __init__(self, parent, app):
-        super().__init__(parent, height=56, bg=app.t["bg"],
+        super().__init__(parent, height=62, bg=app.t["bg"],
                          highlightthickness=0, bd=0)
         self.app = app
         self.bind("<Configure>", lambda e: self.draw())
@@ -429,36 +444,28 @@ class Header(tk.Canvas):
         t, f = self.app.t, self.app.fonts
         w = self.winfo_width()
         self.delete("all")
-
-        # logo: three bars growing, "bit by bit"
-        rounded_rect(self, 0, 6, 44, 50, 13, fill=t["accent"], outline="")
-        for i, bar_height in enumerate((10, 18, 27)):
-            x = 10 + i * 10
-            rounded_rect(self, x, 40 - bar_height, x + 7, 40, 3,
-                         fill=t["on_accent"], outline="")
-
-        self.create_text(58, 19, text="Bit by Bit", anchor="w",
-                         font=f["title"], fill=t["text"])
         today = date.today()
-        self.create_text(58, 43, text=f"{today:%A, %B} {today.day}",
-                         anchor="w", font=f["small"], fill=t["muted"])
+        self.create_text(2, 8, text=f"{today:%A, %B} {today.day}".upper(),
+                         anchor="w", font=f["label"], fill=t["muted"])
+        self.create_text(0, 37, text="Habits", anchor="w", font=f["title"],
+                         fill=t["text"])
 
         # theme switch: a circle that is half filled
-        cx, cy = w - 20, 28
-        self.create_oval(cx - 17, cy - 17, cx + 17, cy + 17, fill=t["card"],
-                         outline=t["border"], tags="theme")
-        self.create_oval(cx - 8, cy - 8, cx + 8, cy + 8, outline=t["text"],
-                         width=2, tags="theme")
-        self.create_arc(cx - 8, cy - 8, cx + 8, cy + 8, start=90, extent=180,
-                        fill=t["text"], outline=t["text"], width=2,
+        cx, cy = w - 14, 37
+        self.create_oval(cx - 14, cy - 14, cx + 14, cy + 14, fill=t["card"],
+                         outline="", tags="theme")
+        self.create_oval(cx - 6, cy - 6, cx + 6, cy + 6, outline=t["muted"],
+                         width=1.5, tags="theme")
+        self.create_arc(cx - 6, cy - 6, cx + 6, cy + 6, start=90, extent=180,
+                        fill=t["muted"], outline=t["muted"], width=1.5,
                         tags="theme")
 
 
 class StatsCard(tk.Canvas):
-    """Today's progress bar and the best running streak."""
+    """A progress ring for today and the best running streak."""
 
     def __init__(self, parent, app):
-        super().__init__(parent, height=118, bg=app.t["bg"],
+        super().__init__(parent, height=80, bg=app.t["bg"],
                          highlightthickness=0, bd=0)
         self.app = app
         self.bind("<Configure>", lambda e: self.draw())
@@ -468,50 +475,56 @@ class StatsCard(tk.Canvas):
         tracker = app.tracker
         w, h = self.winfo_width(), self.winfo_height()
         self.delete("all")
-        rounded_rect(self, 1, 1, w - 1, h - 1, 20, fill=t["card"],
-                     outline=t["border"])
+        rounded_rect(self, 0, 0, w, h, 18, fill=t["card"], outline="")
 
         total = len(tracker.habits)
         done = tracker.done_today_count()
         all_done = total > 0 and done == total
 
-        self.create_text(24, 26, text="TODAY", anchor="w", font=f["label"],
-                         fill=t["muted"])
-        if total:
-            self.create_text(24, 58, text=f"{done}", anchor="w",
-                             font=f["big"], fill=t["text"])
-            number_width = f["big"].measure(f"{done}")
-            self.create_text(24 + number_width + 4, 64, text=f"of {total} done",
-                             anchor="w", font=f["body"], fill=t["muted"])
-        else:
-            self.create_text(24, 58, text="Nothing yet", anchor="w",
-                             font=f["heading"], fill=t["text"])
-
-        # best current streak on the right
-        top = tracker.top_streak()
-        draw_flame(self, w - 62, 40, 13, lit=top > 0, theme=t)
-        self.create_text(w - 40, 40, text=str(top), anchor="w",
-                         font=f["stat"], fill=t["text"] if top else t["muted"])
-        self.create_text(w - 46, 70, text="top streak", anchor="center",
-                         font=f["tiny"], fill=t["muted"])
-
-        # progress bar
-        x1, x2, y = 24, w - 24, h - 24
-        rounded_rect(self, x1, y - 4, x2, y + 4, 4, fill=t["track"], outline="")
+        # progress ring
+        cx, cy, r = 44, h / 2, 20
+        self.create_oval(cx - r, cy - r, cx + r, cy + r, outline=t["track"],
+                         width=5)
         if total and done:
-            fill_to = x1 + max(8, (x2 - x1) * done / total)
-            rounded_rect(self, x1, y - 4, fill_to, y + 4, 4,
-                         fill=t["success"] if all_done else t["accent"],
-                         outline="")
+            color = t["success"] if all_done else t["accent"]
+            if all_done:
+                self.create_oval(cx - r, cy - r, cx + r, cy + r, outline=color,
+                                 width=5)
+            else:
+                self.create_arc(cx - r, cy - r, cx + r, cy + r, start=90,
+                                extent=-360 * done / total, style="arc",
+                                outline=color, width=5)
+        self.create_text(cx, cy, text=f"{done}/{total}" if total else "-",
+                         font=f["stat_s"], fill=t["text"])
+
+        if not total:
+            subtitle = "Add a habit to get started"
+        elif all_done:
+            subtitle = "All done. Nice work!"
+        else:
+            subtitle = f"{done} of {total} completed"
+        self.create_text(82, h / 2 - 9, text="Today", anchor="w",
+                         font=f["row_b"], fill=t["text"])
+        self.create_text(82, h / 2 + 10, text=subtitle, anchor="w",
+                         font=f["sub"], fill=t["muted"])
+
+        # best current streak, kept well away from the right edge
+        top = tracker.top_streak()
+        gx = w - 56  # centre of the little group
+        draw_flame(self, gx - 12, h / 2 - 7, 7, lit=top > 0, theme=t)
+        self.create_text(gx - 2, h / 2 - 7, text=str(top), anchor="w",
+                         font=f["stat"], fill=t["text"] if top else t["muted"])
+        self.create_text(gx, h / 2 + 15, text="top streak", anchor="center",
+                         font=f["tiny"], fill=t["muted"])
 
 
 class AddBar(tk.Canvas):
-    """Text box plus an Add button."""
+    """A plain text field with an icon button and an Add button."""
 
-    PLACEHOLDER = "Add a new habit..."
+    PLACEHOLDER = "New habit"
 
     def __init__(self, parent, app):
-        super().__init__(parent, height=58, bg=app.t["bg"],
+        super().__init__(parent, height=44, bg=app.t["bg"],
                          highlightthickness=0, bd=0)
         self.app = app
         t = app.t
@@ -519,12 +532,13 @@ class AddBar(tk.Canvas):
         self.showing_placeholder = True
         self.entry = tk.Entry(self, relief="flat", bd=0, highlightthickness=0,
                               bg=t["card"], fg=t["muted"],
-                              insertbackground=t["text"], font=app.fonts["body_l"])
+                              insertbackground=t["accent"],
+                              font=app.fonts["body_l"])
         self.entry.insert(0, self.PLACEHOLDER)
         self.entry.bind("<FocusIn>", self.on_focus_in)
         self.entry.bind("<FocusOut>", self.on_focus_out)
         self.entry.bind("<Return>", lambda e: self.submit())
-        self.entry_window = self.create_window(66, 29, window=self.entry,
+        self.entry_window = self.create_window(50, 22, window=self.entry,
                                                anchor="w")
         self.bind("<Configure>", lambda e: self.draw())
         for tag, action in (("add", lambda e: self.submit()),
@@ -534,7 +548,7 @@ class AddBar(tk.Canvas):
             self.tag_bind(tag, "<Leave>", lambda e: self.config(cursor=""))
 
     def next_color(self):
-        return HABIT_COLORS[len(self.app.tracker.habits) % len(HABIT_COLORS)]
+        return self.app.habit_color(len(self.app.tracker.habits))
 
     def typed_name(self):
         return "" if self.showing_placeholder else self.entry.get()
@@ -572,35 +586,42 @@ class AddBar(tk.Canvas):
         t = self.app.t
         w, h = self.winfo_width(), self.winfo_height()
         self.delete("shape")
-        rounded_rect(self, 1, 1, w - 1, h - 1, 20, fill=t["card"],
-                     outline=t["border"], tags="shape")
+        rounded_rect(self, 0, 0, w, h, 22, fill=t["card"], outline="",
+                     tags="shape")
         # icon button: shows the chosen icon, or a faded star as a hint
         if self.icon:
-            draw_icon_chip(self, self.app, self.icon, self.typed_name(), 36,
-                           h / 2, 40, self.next_color(), ("shape", "icon"))
+            draw_icon_chip(self, self.app, self.icon, self.typed_name(), 26,
+                           h / 2, 26, self.next_color(), ("shape", "icon"))
         else:
-            rounded_rect(self, 16, h / 2 - 20, 56, h / 2 + 20, 14,
+            rounded_rect(self, 13, h / 2 - 13, 39, h / 2 + 13, 8,
                          fill=t["track"], outline="", tags=("shape", "icon"))
-            draw_builtin_icon(self, "star", 36, h / 2, 10, t["muted"],
+            draw_builtin_icon(self, "star", 26, h / 2, 7, t["muted"],
                               t["track"], ("shape", "icon"))
-        rounded_rect(self, w - 98, 9, w - 9, h - 9, 14, fill=t["accent"],
-                     outline="", tags=("shape", "add"))
-        self.create_text(w - 53, h / 2, text="+  Add", font=self.app.fonts["button"],
-                         fill=t["on_accent"], tags=("shape", "add"))
-        self.itemconfigure(self.entry_window, width=max(50, w - 184))
+        # text button
+        self.create_rectangle(w - 70, 0, w - 22, h, fill=t["card"], outline="",
+                              tags=("shape", "add"))
+        self.create_text(w - 40, h / 2, text="Add", font=self.app.fonts["button"],
+                         fill=t["accent"], tags=("shape", "add"))
+        self.itemconfigure(self.entry_window, width=max(50, w - 50 - 74))
         self.tag_lower("shape")
 
 
 class HabitCard(tk.Canvas):
-    """One habit: check circle, icon, name, last 7 days and the streak."""
+    """One row of the habit list: check circle, icon, name, streak, last 7 days.
 
-    HEIGHT = 96
+    Rows sit directly on top of each other like a grouped list. position says
+    whether the row is the "first", "middle", "last" or "single" one, so only
+    the outer corners of the group are rounded.
+    """
 
-    def __init__(self, parent, app, habit):
+    HEIGHT = 58
+
+    def __init__(self, parent, app, habit, position="single"):
         super().__init__(parent, height=self.HEIGHT, bg=app.t["bg"],
                          highlightthickness=0, bd=0)
         self.app = app
         self.habit = habit
+        self.position = position
         self.hover = False
         self.bind("<Configure>", lambda e: self.draw())
         self.bind("<Enter>", lambda e: self.set_hover(True))
@@ -619,75 +640,84 @@ class HabitCard(tk.Canvas):
     def draw(self):
         app, t, f, habit = self.app, self.app.t, self.app.fonts, self.habit
         w, h = self.winfo_width(), self.winfo_height()
-        accent = HABIT_COLORS[habit.color % len(HABIT_COLORS)]
+        accent = app.habit_color(habit.color)
         done = habit.done_today()
+        first = self.position in ("first", "single")
+        last = self.position in ("last", "single")
+        cy = h / 2
         self.delete("all")
 
-        rounded_rect(self, 1, 1, w - 1, h - 1, 20,
+        # Draw a rounded rectangle that is taller than the row, so the parts
+        # that should stay square are cut off by the edge of the canvas.
+        rounded_rect(self, -1, 0 if first else -30, w + 1,
+                     h if last else h + 30, 18,
                      fill=t["card_hover"] if self.hover else t["card"],
-                     outline=accent if done else t["border"])
+                     outline="")
+        if not last:
+            self.create_line(88, h - 1, w - 16, h - 1, fill=t["border"])
 
         # check circle (click to log today, click again to undo)
-        cx, cy = 42, h / 2
+        cx = 30
         if done:
-            self.create_oval(cx - 17, cy - 17, cx + 17, cy + 17, fill=accent,
+            self.create_oval(cx - 10, cy - 10, cx + 10, cy + 10, fill=accent,
                              outline=accent, tags="check")
-            self.create_line(cx - 7, cy, cx - 2, cy + 6, cx + 8, cy - 6,
-                             fill="white", width=3, capstyle="round",
+            self.create_line(cx - 4, cy + 0.5, cx - 1, cy + 3.5, cx + 4.5,
+                             cy - 3.5, fill="white", width=2, capstyle="round",
                              joinstyle="round", tags="check")
         else:
-            self.create_oval(cx - 17, cy - 17, cx + 17, cy + 17, fill=t["card"],
-                             outline=accent, width=2, tags="check")
+            self.create_oval(cx - 10, cy - 10, cx + 10, cy + 10, fill=t["card"],
+                             outline=accent, width=1.5, tags="check")
 
         # icon (click it to change it)
-        draw_icon_chip(self, app, habit.icon, habit.name, 98, cy, 44, accent,
+        draw_icon_chip(self, app, habit.icon, habit.name, 62, cy, 30, accent,
                        "icon")
 
         # name
         streak = habit.current_streak()
-        name_space = w - 134 - 112
-        self.create_text(134, 32, text=fit_text(habit.name, f["heading"], name_space),
-                         anchor="w", font=f["heading"], fill=t["text"])
+        name_space = w - 88 - 110
+        self.create_text(88, cy - 9, anchor="w", font=f["row"], fill=t["text"],
+                         text=fit_text(habit.name, f["row"], name_space))
 
-        # last 7 days
+        # streak line under the name
+        if streak > 0:
+            draw_flame(self, 92, cy + 9, 4, lit=True, theme=t)
+            text, x = f"{streak} day streak", 101
+            if habit.best_streak > streak:
+                text += f"  \u00b7  Best {habit.best_streak}"
+        else:
+            text, x = (f"Best {habit.best_streak}" if habit.best_streak
+                       else "Not started yet"), 88
+        self.create_text(x, cy + 9, text=text, anchor="w", font=f["sub"],
+                         fill=t["muted"])
+
+        # last 7 days, as small dots on the right
         today = date.today()
         for i in range(7):
             day = today - timedelta(days=6 - i)
-            x, y = 140 + i * 18, 63
-            filled = day in habit.history
-            self.create_oval(x - 5, y - 5, x + 5, y + 5,
-                             fill=accent if filled else t["track"], outline="")
-            if day == today:
-                self.create_oval(x - 8, y - 8, x + 8, y + 8, outline=accent,
-                                 width=1)
-        self.create_text(140 + 7 * 18 + 4, 63, text=f"best {habit.best_streak}",
-                         anchor="w", font=f["tiny"], fill=t["muted"])
-
-        # streak
-        sx = w - 58
-        draw_flame(self, sx, 30, 11, lit=streak > 0, theme=t)
-        self.create_text(sx, 55, text=str(streak), font=f["stat"],
-                         fill=t["text"] if streak else t["muted"])
-        self.create_text(sx, 77, text="day streak" if streak != 1 else "day",
-                         font=f["tiny"], fill=t["muted"])
+            x = w - 94 + i * 10
+            self.create_oval(x - 2.5, cy - 2.5, x + 2.5, cy + 2.5,
+                             fill=accent if day in habit.history else t["track"],
+                             outline="")
 
         # delete button, only while hovering
         if self.hover:
-            dx, dy = w - 20, 20
-            self.create_oval(dx - 10, dy - 10, dx + 10, dy + 10,
-                             fill=t["track"], outline="", tags="delete")
-            self.create_line(dx - 4, dy - 4, dx + 4, dy + 4, fill=t["danger"],
-                             width=2, capstyle="round", tags="delete")
-            self.create_line(dx - 4, dy + 4, dx + 4, dy - 4, fill=t["danger"],
-                             width=2, capstyle="round", tags="delete")
+            dx = w - 18
+            self.create_oval(dx - 8, cy - 8, dx + 8, cy + 8, fill=t["track"],
+                             outline="", tags="delete")
+            self.create_line(dx - 3, cy - 3, dx + 3, cy + 3,
+                             fill=t["danger"], width=1.5, capstyle="round",
+                             tags="delete")
+            self.create_line(dx - 3, cy + 3, dx + 3, cy - 3,
+                             fill=t["danger"], width=1.5, capstyle="round",
+                             tags="delete")
 
 
 class IconPicker(tk.Toplevel):
     """A small window with every icon to choose from, plus an upload tile."""
 
     COLUMNS = 4
-    CELL = 76
-    GAP = 12
+    CELL = 66
+    GAP = 8
 
     def __init__(self, app, current, name, accent, on_pick):
         super().__init__(app.root)
@@ -713,17 +743,17 @@ class IconPicker(tk.Toplevel):
         height = rows * self.CELL + (rows + 1) * self.GAP
 
         tk.Label(self, text="Choose an icon", bg=t["bg"], fg=t["text"],
-                 font=app.fonts["heading"]).pack(anchor="w", padx=20,
-                                                 pady=(18, 0))
+                 font=app.fonts["row_b"]).pack(anchor="w", padx=20,
+                                               pady=(18, 0))
         tk.Label(self, text="Pick one, or upload your own picture.",
-                 bg=t["bg"], fg=t["muted"], font=app.fonts["body"]
-                 ).pack(anchor="w", padx=20, pady=(2, 4))
+                 bg=t["bg"], fg=t["muted"], font=app.fonts["sub"]
+                 ).pack(anchor="w", padx=20, pady=(2, 8))
         self.grid_canvas = tk.Canvas(self, width=width, height=height,
-                                     bg=t["bg"], highlightthickness=0, bd=0)
-        self.grid_canvas.pack(padx=8)
+                                     bg=t["card"], highlightthickness=0, bd=0)
+        self.grid_canvas.pack(padx=20)
         self.status = tk.Label(self, text="", bg=t["bg"], fg=t["danger"],
-                               font=app.fonts["body"], wraplength=width - 20)
-        self.status.pack(pady=(0, 12))
+                               font=app.fonts["sub"], wraplength=width - 20)
+        self.status.pack(pady=(6, 14))
 
         self.grid_canvas.bind("<Button-1>", self.on_click)
         self.grid_canvas.bind("<Motion>", self.on_motion)
@@ -757,21 +787,24 @@ class IconPicker(tk.Toplevel):
         for index, option in enumerate(self.options):
             x1, y1, x2, y2 = self.cell_box(index)
             cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-            selected = option == self.current and option != "upload"
-            rounded_rect(canvas, x1, y1, x2, y2, 18,
-                         fill=t["card_hover"] if index == self.hovered else t["card"],
-                         outline=self.accent if selected else t["border"],
-                         width=2 if selected else 1)
+            if index == self.hovered:
+                rounded_rect(canvas, x1, y1, x2, y2, 18, fill=t["card_hover"],
+                             outline="")
             if option == "upload":
-                canvas.create_line(cx - 9, cy - 6, cx + 9, cy - 6, fill=t["muted"],
-                                   width=3, capstyle="round")
-                canvas.create_line(cx, cy - 15, cx, cy + 3, fill=t["muted"],
-                                   width=3, capstyle="round")
-                canvas.create_text(cx, y2 - 14, text="Upload", font=f["tiny"],
+                rounded_rect(canvas, cx - 22, cy - 28, cx + 22, cy + 16, 14,
+                             fill=t["track"], outline="")
+                canvas.create_line(cx - 7, cy - 12, cx + 7, cy - 12,
+                                   fill=t["muted"], width=2, capstyle="round")
+                canvas.create_line(cx, cy - 19, cx, cy - 5, fill=t["muted"],
+                                   width=2, capstyle="round")
+                canvas.create_text(cx, cy + 26, text="Upload", font=f["tiny"],
                                    fill=t["muted"])
-            else:
-                draw_icon_chip(canvas, self.app, option, self.name, cx, cy, 48,
-                               self.accent)
+                continue
+            if option == self.current:
+                rounded_rect(canvas, cx - 27, cy - 27, cx + 27, cy + 27, 18,
+                             fill="", outline=t["accent"], width=3)
+            draw_icon_chip(canvas, self.app, option, self.name, cx, cy, 44,
+                           self.accent)
 
     def on_motion(self, event):
         index = self.index_at(event.x, event.y)
@@ -812,7 +845,7 @@ class IconPicker(tk.Toplevel):
 
 class EmptyState(tk.Canvas):
     def __init__(self, parent, app):
-        super().__init__(parent, height=230, bg=app.t["bg"],
+        super().__init__(parent, height=220, bg=app.t["bg"],
                          highlightthickness=0, bd=0)
         self.app = app
         self.bind("<Configure>", lambda e: self.draw())
@@ -822,18 +855,17 @@ class EmptyState(tk.Canvas):
         w = self.winfo_width()
         self.delete("all")
         cx = w / 2
-        rounded_rect(self, cx - 36, 28, cx + 36, 100, 22, fill=t["card"],
-                     outline=t["border"])
-        for i, bar_height in enumerate((14, 26, 40)):
-            x = cx - 20 + i * 15
-            rounded_rect(self, x, 88 - bar_height, x + 10, 88, 4,
-                         fill=t["accent"] if i == 2 else t["track"], outline="")
-        self.create_text(cx, 132, text="No habits yet", font=f["heading"],
+        rounded_rect(self, cx - 28, 30, cx + 28, 86, 17, fill=t["accent"],
+                     outline="")
+        for i, bar_height in enumerate((11, 21, 31)):
+            x = cx - 16 + i * 12
+            rounded_rect(self, x, 73 - bar_height, x + 8, 73, 3,
+                         fill="#FFFFFF", outline="")
+        self.create_text(cx, 112, text="No habits yet", font=f["row_b"],
                          fill=t["text"])
-        self.create_text(cx, 156, text="Type one above and press Enter.\n"
+        self.create_text(cx, 132, text="Type one above and press Enter.\n"
                          "Small steps add up, bit by bit.", justify="center",
-                         anchor="n",
-                         font=f["body"], fill=t["muted"])
+                         anchor="n", font=f["sub"], fill=t["muted"])
 
 
 class ScrollList(tk.Frame):
@@ -889,22 +921,30 @@ class BitByBitApp:
 
         self.root = tk.Tk()
         self.root.title("Bit by Bit")
-        self.root.geometry("480x780")
-        self.root.minsize(420, 560)
+        self.root.geometry("440x740")
+        self.root.minsize(400, 520)
 
-        families = set(tkfont.families())
-        family = next((name for name in FONT_CHOICES if name in families),
-                      "TkDefaultFont")
+        if sys.platform == "darwin":
+            family = ".AppleSystemUIFont"  # the real SF font on a Mac
+        else:
+            families = set(tkfont.families())
+            family = next((name for name in FONT_CHOICES if name in families),
+                          "TkDefaultFont")
         self.fonts = {
-            "title": tkfont.Font(family=family, size=22, weight="bold"),
-            "heading": tkfont.Font(family=family, size=15, weight="bold"),
+            "title": tkfont.Font(family=family, size=26, weight="bold"),
+            "row": tkfont.Font(family=family, size=13),
+            "row_b": tkfont.Font(family=family, size=13, weight="bold"),
+            "sub": tkfont.Font(family=family, size=11),
+            "heading": tkfont.Font(family=family, size=13, weight="bold"),
+            "chip": tkfont.Font(family=family, size=13, weight="bold"),
             "big": tkfont.Font(family=family, size=34, weight="bold"),
-            "stat": tkfont.Font(family=family, size=20, weight="bold"),
-            "body": tkfont.Font(family=family, size=12),
-            "body_l": tkfont.Font(family=family, size=14),
+            "stat": tkfont.Font(family=family, size=15, weight="bold"),
+            "stat_s": tkfont.Font(family=family, size=10, weight="bold"),
+            "body": tkfont.Font(family=family, size=11),
+            "body_l": tkfont.Font(family=family, size=13),
             "button": tkfont.Font(family=family, size=13, weight="bold"),
-            "small": tkfont.Font(family=family, size=12),
-            "tiny": tkfont.Font(family=family, size=10),
+            "small": tkfont.Font(family=family, size=11),
+            "tiny": tkfont.Font(family=family, size=9),
             "label": tkfont.Font(family=family, size=10, weight="bold"),
         }
 
@@ -918,6 +958,9 @@ class BitByBitApp:
     def t(self):
         return THEMES[self.tracker.theme]
 
+    def habit_color(self, index):
+        return HABIT_COLORS[self.tracker.theme][index % COLOR_COUNT]
+
     # -- building the screen ------------------------------------------------
 
     def build(self):
@@ -927,14 +970,18 @@ class BitByBitApp:
         self.root.configure(bg=t["bg"])
 
         page = tk.Frame(self.root, bg=t["bg"])
-        page.pack(fill="both", expand=True, padx=24, pady=(22, 14))
+        page.pack(fill="both", expand=True, padx=24, pady=(16, 12))
 
         self.header = Header(page, self)
         self.header.pack(fill="x")
         self.stats = StatsCard(page, self)
-        self.stats.pack(fill="x", pady=(18, 12))
+        self.stats.pack(fill="x", pady=(6, 10))
         self.add_bar = AddBar(page, self)
-        self.add_bar.pack(fill="x", pady=(0, 18))
+        self.add_bar.pack(fill="x")
+
+        self.section = tk.Label(page, text="", bg=t["bg"], fg=t["muted"],
+                                font=self.fonts["label"], anchor="w")
+        self.section.pack(fill="x", padx=(14, 0), pady=(18, 6))
 
         self.toast = tk.Label(page, text="", bg=t["bg"], fg=t["muted"],
                               font=self.fonts["body"], height=1)
@@ -948,11 +995,21 @@ class BitByBitApp:
         for child in self.list.inner.winfo_children():
             child.destroy()
         self.cards = {}
-        if not self.tracker.habits:
+        habits = self.tracker.habits
+        self.section.config(text="HABITS" if habits else "")
+        if not habits:
             EmptyState(self.list.inner, self).pack(fill="x")
-        for habit in self.tracker.habits:
-            card = HabitCard(self.list.inner, self, habit)
-            card.pack(fill="x", pady=(0, 12))
+        for index, habit in enumerate(habits):
+            if len(habits) == 1:
+                position = "single"
+            elif index == 0:
+                position = "first"
+            elif index == len(habits) - 1:
+                position = "last"
+            else:
+                position = "middle"
+            card = HabitCard(self.list.inner, self, habit, position)
+            card.pack(fill="x")
             self.cards[habit.name] = card
         self.stats.draw()
 
@@ -996,7 +1053,7 @@ class BitByBitApp:
         return f"file:{filename}"
 
     def choose_icon_for(self, habit):
-        accent = HABIT_COLORS[habit.color % len(HABIT_COLORS)]
+        accent = self.habit_color(habit.color)
 
         def chosen(icon):
             habit.icon = icon
